@@ -1163,6 +1163,120 @@ class SecurityFixesTestCase(unittest.TestCase):
         finally:
             settings.GROQ_API_KEY = original_key
 
+    def test_flashcard_feature_routes_scope_private_cards(self):
+        owner_id, owner_token = self._create_user("card-feature-owner@example.com")
+        _, attacker_token = self._create_user("card-feature-attacker@example.com")
+        _module_id, card_id = self._create_module_with_flashcard(owner_id)
+        original_key = settings.GROQ_API_KEY
+        settings.GROQ_API_KEY = "test-key"
+        try:
+            cases = [
+                ("get", f"/api/flashcards/{card_id}/forgetting-curve", None),
+                ("post", f"/api/flashcards/{card_id}/elaborate", None),
+                ("post", f"/api/flashcards/{card_id}/confidence", {"confidence": 4}),
+            ]
+            async def fake_call_groq(*args, **kwargs):
+                return {"data": {"questions": [{"question": "Why?", "hint": "Because."}]}}
+
+            with patch("routers.features.ai_service._call_groq", side_effect=fake_call_groq):
+                for method, path, payload in cases:
+                    with self.subTest(path=path):
+                        kwargs = {}
+                        if payload is not None:
+                            kwargs["json"] = payload
+                        anonymous = getattr(self.client, method)(path, **kwargs)
+                        attacker = getattr(self.client, method)(
+                            path,
+                            cookies={SESSION_COOKIE_NAME: attacker_token},
+                            **kwargs,
+                        )
+                        owner = getattr(self.client, method)(
+                            path,
+                            cookies={SESSION_COOKIE_NAME: owner_token},
+                            **kwargs,
+                        )
+                        self.assertEqual(anonymous.status_code, 404)
+                        self.assertEqual(attacker.status_code, 404)
+                        self.assertEqual(owner.status_code, 200)
+
+            with SessionLocal() as db:
+                logs = db.query(ReviewLog).filter(ReviewLog.item_id == card_id).all()
+                self.assertEqual(len(logs), 1)
+                self.assertEqual(logs[0].user_id, owner_id)
+        finally:
+            settings.GROQ_API_KEY = original_key
+
+    def test_synthesis_cards_requires_all_modules_owned_by_request_user(self):
+        owner_id, _ = self._create_user("synthesis-owner@example.com")
+        attacker_id, attacker_token = self._create_user("synthesis-attacker@example.com")
+        owner_module_id, _owner_concept_id = self._create_module_with_concept_items(owner_id)
+        attacker_module_id, _attacker_concept_id = self._create_module_with_concept_items(attacker_id)
+        original_key = settings.GROQ_API_KEY
+        settings.GROQ_API_KEY = "test-key"
+        try:
+            response = self.client.post(
+                "/api/synthesis-cards",
+                cookies={SESSION_COOKIE_NAME: attacker_token},
+                json={"module_ids": [owner_module_id, attacker_module_id], "num_cards": 1},
+            )
+        finally:
+            settings.GROQ_API_KEY = original_key
+
+        self.assertEqual(response.status_code, 404)
+        with SessionLocal() as db:
+            cards = db.query(Flashcard).filter(Flashcard.module_id == owner_module_id).all()
+            self.assertEqual(len(cards), 1)
+            self.assertEqual(cards[0].user_id, owner_id)
+
+    def test_study_feature_analytics_do_not_leak_private_user_data_to_anonymous(self):
+        owner_id, _ = self._create_user("analytics-owner@example.com")
+        module_id, card_ids = self._create_module_with_due_flashcards(owner_id)
+        with SessionLocal() as db:
+            session = StudySession(
+                user_id=owner_id,
+                module_id=module_id,
+                session_type="FLASHCARDS",
+                started_at=datetime.utcnow(),
+            )
+            db.add(session)
+            db.flush()
+            db.add_all([
+                ReviewLog(
+                    user_id=owner_id,
+                    session_id=session.id,
+                    item_id=card_ids[0],
+                    item_type="FLASHCARD",
+                    rating="CONFIDENCE:5",
+                    was_correct=False,
+                    answered_at=datetime.utcnow() - timedelta(minutes=2),
+                ),
+                ReviewLog(
+                    user_id=owner_id,
+                    session_id=session.id,
+                    item_id=card_ids[0],
+                    item_type="FLASHCARD",
+                    rating="GOOD",
+                    was_correct=True,
+                    answered_at=datetime.utcnow() - timedelta(minutes=1),
+                    time_taken_seconds=30,
+                ),
+            ])
+            db.commit()
+
+        estimate = self.client.get("/api/session-estimate", params={"module_id": module_id})
+        retention = self.client.get("/api/analytics/retention-forecast")
+        calibration = self.client.get("/api/analytics/calibration")
+        heatmap = self.client.get("/api/analytics/mastery-heatmap")
+
+        self.assertEqual(estimate.status_code, 404)
+        self.assertEqual(retention.status_code, 200)
+        self.assertNotIn(module_id, {item["module_id"] for item in retention.json()["modules"]})
+        self.assertEqual(calibration.status_code, 200)
+        self.assertEqual(sum(item["count"] for item in calibration.json()["calibration"]), 0)
+        self.assertEqual(heatmap.status_code, 200)
+        self.assertEqual(sum(day["items_reviewed"] for day in heatmap.json()["days"]), 0)
+        self.assertEqual(sum(day["sessions_count"] for day in heatmap.json()["days"]), 0)
+
     def test_clip_url_cannot_write_to_another_users_module(self):
         owner_id, _ = self._create_user("clip-owner@example.com")
         _, attacker_token = self._create_user("clip-attacker@example.com")
