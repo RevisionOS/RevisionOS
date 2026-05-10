@@ -647,6 +647,13 @@ def _scope_session_query(db: Session, session_id: str, user: OptionalType[User])
     return query.filter(StudySession.user_id.is_(None))
 
 
+def _scope_flashcard_query(db: Session, card_id: str, user: OptionalType[User]):
+    query = db.query(Flashcard).filter(Flashcard.id == card_id)
+    if user:
+        return query.filter(Flashcard.user_id == user.id)
+    return query.filter(Flashcard.user_id.is_(None))
+
+
 def _parse_tags_json(tags_str: OptionalType[str]) -> list[str]:
     if not tags_str:
         return []
@@ -679,7 +686,7 @@ def forgetting_curve(
     db: Session = Depends(get_db),
     user: OptionalType[User] = Depends(get_current_user),
 ):
-    card = db.query(Flashcard).filter(Flashcard.id == card_id).first()
+    card = _scope_flashcard_query(db, card_id, user).first()
     if not card:
         raise HTTPException(status_code=404, detail="Flashcard not found")
 
@@ -715,9 +722,14 @@ def session_estimate(
 
     card_query = db.query(Flashcard)
     if module_id:
-        card_query = card_query.filter(Flashcard.module_id == module_id)
+        module = _scope_module_query(db, module_id, user).first()
+        if not module:
+            raise HTTPException(status_code=404, detail="Module not found")
+        card_query = card_query.filter(Flashcard.module_id == module.id)
     if user:
         card_query = card_query.filter(Flashcard.user_id == user.id)
+    else:
+        card_query = card_query.filter(Flashcard.user_id.is_(None))
 
     due_cards = card_query.filter(Flashcard.due <= now).all()
     new_cards = sum(1 for c in due_cards if c.state == "NEW")
@@ -727,6 +739,8 @@ def session_estimate(
     avg_query = db.query(func.avg(ReviewLog.time_taken_seconds))
     if user:
         avg_query = avg_query.filter(ReviewLog.user_id == user.id)
+    else:
+        avg_query = avg_query.filter(ReviewLog.user_id.is_(None))
     avg_seconds = avg_query.scalar() or 15.0
 
     estimated_minutes = round((len(due_cards) * avg_seconds) / 60.0, 1)
@@ -857,7 +871,12 @@ async def synthesis_cards(
     if not settings.GROQ_API_KEY:
         raise HTTPException(status_code=400, detail="Groq API key not configured")
 
-    modules = db.query(Module).filter(Module.id.in_(body.module_ids)).all()
+    modules = db.query(Module).filter(Module.id.in_(body.module_ids))
+    if user:
+        modules = modules.filter(Module.user_id == user.id)
+    else:
+        modules = modules.filter(Module.user_id.is_(None))
+    modules = modules.all()
     if len(modules) != len(body.module_ids):
         raise HTTPException(status_code=404, detail="One or more modules not found")
 
@@ -957,7 +976,7 @@ async def elaborate(
     db: Session = Depends(get_db),
     user: OptionalType[User] = Depends(get_current_user),
 ):
-    card = db.query(Flashcard).filter(Flashcard.id == card_id).first()
+    card = _scope_flashcard_query(db, card_id, user).first()
     if not card:
         raise HTTPException(status_code=404, detail="Flashcard not found")
     if not settings.GROQ_API_KEY:
@@ -1388,14 +1407,16 @@ def confidence_rating(
     db: Session = Depends(get_db),
     user: OptionalType[User] = Depends(get_current_user),
 ):
-    card = db.query(Flashcard).filter(Flashcard.id == card_id).first()
+    card = _scope_flashcard_query(db, card_id, user).first()
     if not card:
         raise HTTPException(status_code=404, detail="Flashcard not found")
 
-    # Find the most recent active study session for the user (or any session)
+    # Find the most recent active study session for the user (or any anonymous session)
     session_query = db.query(StudySession).filter(StudySession.ended_at.is_(None))
     if user:
         session_query = session_query.filter(StudySession.user_id == user.id)
+    else:
+        session_query = session_query.filter(StudySession.user_id.is_(None))
     session = session_query.order_by(StudySession.started_at.desc()).first()
 
     # If no open session, create a lightweight one
@@ -1444,6 +1465,8 @@ def calibration(
     conf_query = db.query(ReviewLog).filter(conf_filter)
     if user:
         conf_query = conf_query.filter(ReviewLog.user_id == user.id)
+    else:
+        conf_query = conf_query.filter(ReviewLog.user_id.is_(None))
     confidence_logs = conf_query.order_by(ReviewLog.answered_at.asc()).all()
 
     # Build buckets: confidence_level → list of bool (was the next review correct?)
@@ -1466,6 +1489,8 @@ def calibration(
         )
         if user:
             outcome_query = outcome_query.filter(ReviewLog.user_id == user.id)
+        else:
+            outcome_query = outcome_query.filter(ReviewLog.user_id.is_(None))
         outcome = outcome_query.order_by(ReviewLog.answered_at.asc()).first()
 
         if outcome is not None:
@@ -1669,6 +1694,8 @@ def retention_forecast(
     modules_query = db.query(Module)
     if user:
         modules_query = modules_query.filter(Module.user_id == user.id)
+    else:
+        modules_query = modules_query.filter(Module.user_id.is_(None))
     modules = modules_query.all()
 
     result_modules: list[ModuleForecast] = []
@@ -1868,6 +1895,8 @@ def mastery_heatmap(
     )
     if user:
         log_query = log_query.filter(ReviewLog.user_id == user.id)
+    else:
+        log_query = log_query.filter(ReviewLog.user_id.is_(None))
     logs = log_query.all()
 
     session_query = db.query(StudySession).filter(
@@ -1875,6 +1904,8 @@ def mastery_heatmap(
     )
     if user:
         session_query = session_query.filter(StudySession.user_id == user.id)
+    else:
+        session_query = session_query.filter(StudySession.user_id.is_(None))
     sessions = session_query.all()
 
     # Index sessions by date
