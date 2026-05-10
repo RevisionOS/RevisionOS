@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { CalendarDots, SpinnerGap } from '@phosphor-icons/react';
 import { getCurriculum, getModule, getModules, updateModule } from '../api/client';
 import { usePersistentState } from '../hooks/usePersistentState';
+import { useToast } from '../hooks/useToast';
 import { formatRelativeTime } from '../utils/formatters';
 
 const glass = {
@@ -16,6 +17,8 @@ const glass = {
 
 export default function CurriculumPage() {
   const [searchParams] = useSearchParams();
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
   const preselectedModule = searchParams.get('module') ?? '';
   const [storedModuleId, setStoredModuleId] = usePersistentState('curriculum:module', preselectedModule);
   const [moduleId, setModuleId] = useState(storedModuleId || preselectedModule);
@@ -40,9 +43,15 @@ export default function CurriculumPage() {
 
   const updateMutation = useMutation({
     mutationFn: (payload: { exam_date?: string }) => updateModule(moduleId, payload),
-    onSuccess: () => {
-      moduleQuery.refetch();
-      curriculumQuery.refetch();
+    onSuccess: (updated) => {
+      setExamDateDraft(updated.exam_date ? updated.exam_date.slice(0, 10) : '');
+      queryClient.invalidateQueries({ queryKey: ['modules'] });
+      queryClient.invalidateQueries({ queryKey: ['module', moduleId] });
+      queryClient.invalidateQueries({ queryKey: ['curriculum', moduleId] });
+      showToast({ title: 'Exam date saved', description: 'Your study plan has been refreshed.', tone: 'success' });
+    },
+    onError: () => {
+      showToast({ title: 'Could not save exam date', description: 'Your selected date is still in the field.', tone: 'error' });
     },
   });
 
@@ -81,10 +90,16 @@ export default function CurriculumPage() {
           <label className="block mb-2" style={{ color: 'var(--text-secondary)', fontSize: '0.88rem' }}>Exam date</label>
           <input type="date" value={examDate} onChange={(event) => setExamDateDraft(event.target.value)} className="w-full px-3 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', color: 'var(--text)' }} />
         </div>
-        <button type="button" className="scholar-btn" disabled={!moduleId} onClick={() => updateMutation.mutate({ exam_date: examDate || undefined })}>
-          Save Date
+        <button type="button" className="scholar-btn" disabled={!moduleId || updateMutation.isPending} onClick={() => updateMutation.mutate({ exam_date: examDate || undefined })}>
+          {updateMutation.isPending ? 'Saving…' : 'Save Date'}
         </button>
       </div>
+
+      {updateMutation.isError ? (
+        <div role="alert" className="p-3 mb-6" style={{ ...glass, color: 'var(--danger)', fontSize: '0.9rem' }}>
+          Could not save that exam date. Check the date and try again.
+        </div>
+      ) : null}
 
       {!moduleId ? (
         <div className="p-10 text-center" style={glass}>
