@@ -73,8 +73,8 @@ export default function CurriculumPage() {
 
       <div className="p-5 mb-6 grid grid-cols-1 md:grid-cols-[1.4fr_1fr_auto] gap-3 items-end" style={glass}>
         <div>
-          <label className="block mb-2" style={{ color: 'var(--text-secondary)', fontSize: '0.88rem' }}>Module</label>
-          <select value={moduleId} onChange={(event) => {
+          <label htmlFor="curriculum-module" className="block mb-2" style={{ color: 'var(--text-secondary)', fontSize: '0.88rem' }}>Module</label>
+          <select id="curriculum-module" value={moduleId} onChange={(event) => {
             setModuleId(event.target.value);
             setExamDateDraft(null);
           }} className="w-full px-3 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', color: 'var(--text)' }}>
@@ -87,8 +87,8 @@ export default function CurriculumPage() {
           </select>
         </div>
         <div>
-          <label className="block mb-2" style={{ color: 'var(--text-secondary)', fontSize: '0.88rem' }}>Exam date</label>
-          <input type="date" value={examDate} onChange={(event) => setExamDateDraft(event.target.value)} className="w-full px-3 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', color: 'var(--text)' }} />
+          <label htmlFor="curriculum-exam-date" className="block mb-2" style={{ color: 'var(--text-secondary)', fontSize: '0.88rem' }}>Exam date</label>
+          <input id="curriculum-exam-date" type="date" value={examDate} onChange={(event) => setExamDateDraft(event.target.value)} className="w-full px-3 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', color: 'var(--text)' }} />
         </div>
         <button type="button" className="scholar-btn" disabled={!moduleId || updateMutation.isPending} onClick={() => updateMutation.mutate({ exam_date: examDate || undefined })}>
           {updateMutation.isPending ? 'Saving…' : 'Save Date'}
