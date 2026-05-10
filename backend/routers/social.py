@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, case, func
 from sqlalchemy.orm import Session
 
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, cache_invalidate_prefix
 from database import get_db
 from models.module import Module
 from models.user import User
@@ -232,12 +232,20 @@ def share_module(
     module = db.query(Module).filter(Module.id == body.module_id, Module.user_id == user.id).first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+    module.is_public = body.is_public
+    db.commit()
+    cache_invalidate_prefix("cache:social:shared-modules")
     return {"status": "shared", "module_id": module.id, "is_public": body.is_public}
 
 
 @router.get("/shared-modules")
 def list_shared_modules(db: Session = Depends(get_db)):
-    """List publicly shared modules (stub — returns all modules with user info)."""
+    """List modules explicitly marked public by their owners."""
+    cache_key = "cache:social:shared-modules"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     modules = (
         db.query(
             Module.id,
@@ -248,11 +256,12 @@ def list_shared_modules(db: Session = Depends(get_db)):
             User.display_name.label("owner_name"),
         )
         .outerjoin(User, User.id == Module.user_id)
-        .filter(Module.user_id.isnot(None))
+        .filter(Module.user_id.isnot(None), Module.is_public.is_(True))
+        .order_by(Module.created_at.desc())
         .limit(20)
         .all()
     )
-    return [
+    response = [
         {
             "id": module.id,
             "name": module.name,
@@ -263,3 +272,5 @@ def list_shared_modules(db: Session = Depends(get_db)):
         }
         for module in modules
     ]
+    cache_set(cache_key, response, ttl=120)
+    return response

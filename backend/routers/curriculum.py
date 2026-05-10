@@ -66,8 +66,12 @@ def set_curriculum_date(
 
 
 @router.get("/api/modules/{module_id}/curriculum", response_model=CurriculumResponse)
-def get_curriculum(module_id: str, db: Session = Depends(get_db)):
-    module = db.query(Module).filter(Module.id == module_id).first()
+def get_curriculum(
+    module_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_user),
+):
+    module = db.query(Module).filter(Module.id == module_id, Module.user_id == current_user.id).first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
     if not module.study_plan_json:
