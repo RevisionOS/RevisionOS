@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Text
+from sqlalchemy import Boolean, Column, String, DateTime, ForeignKey, Integer, Text
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -25,6 +25,7 @@ class Module(Base):
     pipeline_updated_at = Column(DateTime, nullable=True)
     study_plan_json = Column(Text, nullable=True)
     study_plan_generated_at = Column(DateTime, nullable=True)
+    is_public = Column(Boolean, nullable=False, default=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

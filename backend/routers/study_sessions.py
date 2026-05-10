@@ -14,7 +14,7 @@ from models.flashcard import Flashcard
 from models.module import Module
 from models.user_stats import UserStats
 from typing import Optional as OptionalType
-from services.auth_service import get_current_user
+from services.auth_service import get_current_user, require_user
 from models.user import User
 
 router = APIRouter(tags=["sessions"])
@@ -112,11 +112,10 @@ def list_sessions(
     module_id: Optional[str] = None,
     limit: int = 20,
     db: Session = Depends(get_db),
-    user: OptionalType[User] = Depends(get_current_user),
+    user: User = Depends(require_user),
 ):
     query = db.query(StudySession).options(joinedload(StudySession.module))
-    if user:
-        query = query.filter(StudySession.user_id == user.id)
+    query = query.filter(StudySession.user_id == user.id)
     if module_id:
         query = query.filter(StudySession.module_id == module_id)
     sessions = query.order_by(StudySession.started_at.desc()).limit(limit).all()
@@ -250,26 +249,20 @@ def get_session_timer(
 
 
 @router.get("/api/analytics/overview", response_model=OverviewResponse)
-def analytics_overview(db: Session = Depends(get_db), user: OptionalType[User] = Depends(get_current_user)):
-    cache_key = f"cache:analytics:{user.id if user else 'anonymous'}:overview"
+def analytics_overview(db: Session = Depends(get_db), user: User = Depends(require_user)):
+    cache_key = f"cache:analytics:{user.id}:overview"
     cached = cache_get(cache_key)
     if cached is not None:
         return cached
 
-    mod_query = db.query(Module)
-    card_query = db.query(Flashcard)
-    session_query_base = db.query(StudySession)
-    if user:
-        mod_query = mod_query.filter(Module.user_id == user.id)
-        card_query = card_query.filter(Flashcard.user_id == user.id)
-        session_query_base = session_query_base.filter(StudySession.user_id == user.id)
+    mod_query = db.query(Module).filter(Module.user_id == user.id)
+    card_query = db.query(Flashcard).filter(Flashcard.user_id == user.id)
+    session_query_base = db.query(StudySession).filter(StudySession.user_id == user.id)
     total_modules = mod_query.count()
     total_cards = card_query.count()
 
     now = datetime.utcnow()
-    due_query = db.query(Flashcard).filter(Flashcard.due <= now)
-    if user:
-        due_query = due_query.filter(Flashcard.user_id == user.id)
+    due_query = db.query(Flashcard).filter(Flashcard.due <= now, Flashcard.user_id == user.id)
     due_today = due_query.count()
 
     # Calculate streak from a single distinct-date query instead of 365 point lookups
@@ -318,7 +311,7 @@ def analytics_overview(db: Session = Depends(get_db), user: OptionalType[User] =
 
 
 @router.get("/api/analytics/streaks", response_model=StreakResponse)
-def get_streaks(db: Session = Depends(get_db), user: OptionalType[User] = Depends(get_current_user)):
+def get_streaks(db: Session = Depends(get_db), user: User = Depends(require_user)):
     """Current streak, longest streak, and daily activity for last 30 days."""
     today = datetime.utcnow().date()
     window_start = datetime.combine(today - timedelta(days=29), datetime.min.time())
@@ -344,10 +337,9 @@ def get_streaks(db: Session = Depends(get_db), user: OptionalType[User] = Depend
         .join(ReviewLog, ReviewLog.session_id == StudySession.id)
         .filter(StudySession.started_at >= window_start)
     )
-    if user:
-        sessions_by_date_query = sessions_by_date_query.filter(StudySession.user_id == user.id)
-        longest_dates_query = longest_dates_query.filter(StudySession.user_id == user.id)
-        reviewed_by_date_query = reviewed_by_date_query.filter(StudySession.user_id == user.id)
+    sessions_by_date_query = sessions_by_date_query.filter(StudySession.user_id == user.id)
+    longest_dates_query = longest_dates_query.filter(StudySession.user_id == user.id)
+    reviewed_by_date_query = reviewed_by_date_query.filter(StudySession.user_id == user.id)
 
     sessions_by_date = {
         str(day): int(count or 0)
@@ -416,7 +408,7 @@ def get_performance_over_time(
     module_id: Optional[str] = Query(None),
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db),
-    user: OptionalType[User] = Depends(get_current_user),
+    user: User = Depends(require_user),
 ):
     """Daily average scores over time."""
     today = datetime.utcnow().date()
@@ -432,8 +424,7 @@ def get_performance_over_time(
             StudySession.started_at <= day_end,
             StudySession.ended_at.isnot(None),
         )
-        if user:
-            query = query.filter(StudySession.user_id == user.id)
+        query = query.filter(StudySession.user_id == user.id)
         if module_id:
             query = query.filter(StudySession.module_id == module_id)
 

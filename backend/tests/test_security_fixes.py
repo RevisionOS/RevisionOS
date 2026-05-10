@@ -906,6 +906,78 @@ class SecurityFixesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["total"], 0)
 
+    def test_curriculum_requires_owned_module(self):
+        owner_id, owner_token = self._create_user("curriculum-owner@example.com")
+        _, attacker_token = self._create_user("curriculum-attacker@example.com")
+        with SessionLocal() as db:
+            module = Module(
+                user_id=owner_id,
+                name="Private Plan",
+                study_plan_json=json.dumps({
+                    "module_name": "Private Plan",
+                    "total_concepts": 1,
+                    "weeks": [],
+                    "total_weeks": 0,
+                    "hours_per_week": 0,
+                }),
+            )
+            db.add(module)
+            db.commit()
+            module_id = module.id
+
+        anonymous = self.client.get(f"/api/modules/{module_id}/curriculum")
+        attacker = self.client.get(
+            f"/api/modules/{module_id}/curriculum",
+            cookies={SESSION_COOKIE_NAME: attacker_token},
+        )
+        owner = self.client.get(
+            f"/api/modules/{module_id}/curriculum",
+            cookies={SESSION_COOKIE_NAME: owner_token},
+        )
+
+        self.assertEqual(anonymous.status_code, 401)
+        self.assertEqual(attacker.status_code, 404)
+        self.assertEqual(owner.status_code, 200)
+
+    def test_analytics_endpoints_require_authentication(self):
+        for url in [
+            "/api/sessions",
+            "/api/analytics/overview",
+            "/api/analytics/streaks",
+            "/api/analytics/performance-over-time",
+        ]:
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 401)
+
+    def test_shared_modules_only_returns_explicitly_public_modules(self):
+        owner_id, owner_token = self._create_user("sharing-owner@example.com")
+        other_id, _other_token = self._create_user("sharing-other@example.com")
+        with SessionLocal() as db:
+            public_module = Module(user_id=owner_id, name="Public Biology", is_public=True)
+            private_module = Module(user_id=other_id, name="Private Chemistry", is_public=False)
+            db.add_all([public_module, private_module])
+            db.commit()
+            public_id = public_module.id
+            private_id = private_module.id
+
+        initial = self.client.get("/api/social/shared-modules")
+        self.assertEqual(initial.status_code, 200)
+        initial_ids = {module["id"] for module in initial.json()}
+        self.assertIn(public_id, initial_ids)
+        self.assertNotIn(private_id, initial_ids)
+
+        unshare = self.client.post(
+            "/api/social/share-module",
+            cookies={SESSION_COOKIE_NAME: owner_token},
+            json={"module_id": public_id, "is_public": False},
+        )
+        self.assertEqual(unshare.status_code, 200)
+
+        after_unshare = self.client.get("/api/social/shared-modules")
+        self.assertEqual(after_unshare.status_code, 200)
+        self.assertNotIn(public_id, {module["id"] for module in after_unshare.json()})
+
     def test_flashcard_asset_upload_rejects_content_type_bypass(self):
         owner_id, owner_token = self._create_user("asset-owner@example.com")
         _, card_id = self._create_module_with_flashcard(owner_id)
